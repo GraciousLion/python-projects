@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 
 from itertools import chain
+import multiprocessing as mp
+import sys
+import time
 
 import numpy as np
 
 def _valid(word):
-    return word.islower() and word.isascii() and len(word) < 17
+    return word.islower() and word.isascii() and word.isalpha() and len(word) < 17
 
 with open('/usr/share/dict/words') as f:
     words = {l for l in f.read().split('\n') if _valid(l)}
-with open('data/merriam-webster-words') as f:
+with open('data/real-words') as f:
     words.update(l for l in f.read().split('\n') if _valid(l))
 
 def input_board():
@@ -25,9 +28,9 @@ def input_board():
     board = np.array(board)
     # print(repr(board))
     # board = np.array([['a', 'e', 'k', 'h'],
-    #                  ['l', 'l', 'e', 's'],
-    #                  ['i', 't', 'a', 'c'],
-    #                  ['t', 'g', 'r', 'i']], dtype='<U1')
+    #                   ['l', 'l', 'e', 's'],
+    #                   ['i', 't', 'a', 'c'],
+    #                   ['t', 'g', 'r', 'i']], dtype='<U1')
     return board
 
 
@@ -53,6 +56,7 @@ class String:
         8: 11,
         9: 11,
         10: 11,
+        11: 11,
         12: 11,
         13: 11,
         14: 11,
@@ -84,14 +88,10 @@ class String:
         return self.word
 
     def __repr__(self):
-        repr_board = repr(self.board).replace('\n', '\n    ')
-        return f'String(\n    np.{repr_board},\n    {self.chars!r},\n    {self.tiles!r}\n)'
+        return f'String({self.word!r})'
 
     def __len__(self):
         return len(self.word)
-
-    def __hash__(self):
-        return hash(self.word)
 
     def __gt__(self, other):
         return (-self.points, self.word) > (-other.points, other.word)
@@ -99,24 +99,7 @@ class String:
     def __eq__(self, other):
         return self.word == other.word
 
-    '''
-    def location(self):
-        string = []
-        for r, row in enumerate(self.board):
-            string.append([])
-            for c, letter in enumerate(row):
-                if (r, c) == self.tiles[0]:
-                    string[-1].append(f'\x1b[1;32m{letter.upper()}\x1b[0m')
-                elif (r, c) == self.tiles[-1]:
-                    string[-1].append(f'\x1b[1;35m{letter.upper()}\x1b[0m')
-                elif (r, c) in self.tiles:
-                    string[-1].append(f'\x1b[1m{letter.upper()}\x1b[0m')
-                else:
-                    string[-1].append(letter.upper())
-        return '\n'.join(''.join(row) for row in string) + '\n' + ', '.join(map(lambda p: str((p[0]+1, p[1]+1)), self.tiles))
-    '''
-
-    def location(self):
+    def show(self):
         board = [
             [
                 self.board[row // 2, col // 3].upper()
@@ -134,10 +117,7 @@ class String:
                 arrow_c -= 1
             arrow = self.arrows[change]
             board[arrow_r][arrow_c] = arrow
-        return '\n'.join(''.join(row) for row in board)
-
-    def print_location(self):
-        print(self.location())
+        print('\n'.join(''.join(row) for row in board))
 
     def define(self):
         r = requests.get(f'https://www.merriam-webster.com/dictionary/{self.word}')
@@ -160,12 +140,6 @@ class String:
                 for i, s in enumerate(defin.find(class_='dtText').strings)
                 if i != 0
             )
-            # try:
-            #     example = 
-            # except AttributeError:
-            #     example = ''
-            # else:
-            #     example = 
             example = defin.find(class_='sub-content-thread')
             if example is None:
                 example = ''
@@ -186,25 +160,24 @@ class String:
         )
 
     def spawn(self):
-        could_be = [w for w in words if w.startswith(self.word) and self.word != w]
+        could_be = set(chain(*(
+            (w[:len(self) + 1], w[:len(self) + 2])
+            for w in words
+            if w.startswith(self.word) and self.word != w
+        )))
+        # could_be = [w for w in words if w.startswith(self.word) and self.word != w]
         if not could_be:
-            return (None for none in [])
+            # print('Hopeless:', self)
+            return (None for _ in [])
         for letter, pos, change in neighbors(self.board, self.tiles[-1]):
             if pos in self.tiles:
                 continue
-            string = self.add(pos, change)
-            if any(w.startswith(string.word) for w in could_be):
-                yield string
+            string = self.word + letter
+            # if any(w.startswith(string) for w in could_be):
+            if string in could_be:
+                yield self.add(pos, change)
 
-
-if __name__ == '__main__':
-    import webbrowser
-
-    import requests
-    from bs4 import BeautifulSoup
-
-    board = input_board()
-
+def _sync_spawn_all(board):
     last_spawned = [
         String(board, (char,), [(r, c)])
         for r, row in enumerate(board)
@@ -216,7 +189,42 @@ if __name__ == '__main__':
         last_spawned = list(chain(*[string.spawn() for string in last_spawned]))
         if last_spawned and len(last_spawned[0]) > 2:
             valid_words.update({w.word: w for w in last_spawned if w.exists})
+    return valid_words
 
+def _spawn_string(s):
+    return list(s.spawn())
+
+def _spawn_all(board):
+    last_spawned = [
+        String(board, (char,), [(r, c)])
+        for r, row in enumerate(board)
+        for c, char in enumerate(row)
+    ]
+
+    def plural(n):
+        return '' if n == 1 or n == -1 else 's'
+
+    valid_words = {}
+    with mp.Pool() as pool:
+        while last_spawned:
+            last_spawned = list(chain(*pool.map(_spawn_string, last_spawned)))
+            valid_words.update({w.word: w for w in last_spawned if w.exists and len(w) > 2})
+    return valid_words
+
+
+if __name__ == '__main__':
+    import webbrowser
+
+    import requests
+    from bs4 import BeautifulSoup
+
+    import argv_parse
+
+    board = input_board()
+
+    start = time.perf_counter()
+    valid_words = _spawn_all(board)
+    print(f'It took {time.perf_counter() - start:.1f}s.')
     print(f'\nFound {len(valid_words)} words, for {sum(w.points for w in valid_words.values())} points:')
     print(*sorted(valid_words.values()), sep='\t')
 
@@ -246,7 +254,7 @@ if __name__ == '__main__':
                 if command == 'def':
                     word.define()
                 elif command == 'show':
-                    word.print_location()
+                    word.show()
                 elif command == 'open':
                     webbrowser.open(f'https://www.merriam-webster.com/dictionary/{word.word}')
     except (KeyboardInterrupt, EOFError):

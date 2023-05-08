@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+
+import re # RegEx, Regular Expression
+import os
+from textwrap import TextWrapper
+from shutil import get_terminal_size
+os.chdir(os.path.split(__file__)[0])
+
+in_brac = re.compile('\[([^\[\]]+)\]')
+wrap = TextWrapper(
+    min(get_terminal_size()[0], 100),
+    tabsize=4,
+    replace_whitespace=False,
+    placeholder=' ...')
+
+def undline(string):
+    # the unicode 0332 is this weird character: '̲'
+    # for example:
+    # >>> '\u0332'.join('my underlined string')
+    # 'm̲y̲ u̲n̲d̲e̲r̲l̲i̲n̲e̲d̲ s̲t̲r̲i̲n̲g'
+    return '\u0332'.join(string)+'\u0332'
+
+def replace_brackets(replace_from):
+    '''Replaces all text in brackets with input from user; if more than one instance of a certain word in brackets, asks for as many as needed all at once
+    '''
+    while (first := in_brac.search(replace_from)):
+        word_count = replace_from.count(first[0])
+        replacements = input(
+            f'Input {word_count} {first[1]}'
+            f'{"s. Separate entries with commas" if word_count != 1 else ""}.'
+            f' \n  ').split(',')
+
+        for rep in replacements:
+            if first[0] not in replace_from: break
+            replace_from = replace_from.replace(
+                first[0], undline(rep.strip()), 1)
+    return replace_from
+
+def ask_save(text, ifDate, written, whatToSay):
+    name = input(f'{whatToSay}Otherwise, press Enter. \n  ')
+    if name != '':
+        while os.path.exists(f'.madlibs/Saved/{name}.txt'):
+            name = input('A file with this name already exists. Please choose another name. \n  ')
+        madeBy = input('Who wrote this mad lab? ')
+        with open(f'.madlibs/Saved/{name}.txt', 'w') as newFile:
+            verb = 'written' if written else 'played'
+            if ifDate:
+                from datetime import datetime as dttm
+                newFile.write(
+                    f'This mad lib was {verb} by {madeBy} '
+                    f'on {dttm.now():%A, %B %d, %Y}'
+                    '. \n\n' + text)
+            else:
+                newFile.write(f'This mad lib was {verb} by {madeBy}. \n\n' + text)
+
+madlibs = {
+    file[:-4].lower(): {'name': file[:-4], 'text': open(f'.madlibs/{file}').read()}
+    for file in os.listdir('.madlibs') if file.endswith('.txt')
+}
+
+chose_name = input('To choose one of our prewritten madlibs, '
+                   '\nenter one of the options below. To write your own, '
+                   '\nenter the name of the madlib you are going to write. \n'
+                  +'\n'.join(pm['name'] for pm in madlibs.values())+'\n  ')
+
+if chose_name.lower() in madlibs:
+    madlib = madlibs[chose_name.lower()]['text']
+    wrote = False
+else:
+    madlib = input('\nWrite your madlib. Where you want the '
+                   '\nplayer to enter a noun, type [noun], and for an '
+                   '\nadjective, write [adjective]. Any part of speech is '
+                   '\nacceptable. \n\n  ')
+    wrote = True
+
+replaced = '\n'.join(wrap.wrap(replace_brackets(madlib)))
+print('\n' + replaced + '\n\n')
+
+if wrote: ask_save(madlib, True, True, 'To save this mad lib in a new file with the blanks empty, enter a (descriptive) name. ')
+
+ask_save(replaced, True, False, 'To save this mad lib with the blanks filled in with the words currently selected, enter a (descriptive) name. ')
